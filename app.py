@@ -140,8 +140,8 @@ HTML_TEMPLATE = """
 # ==========================================
 # 2. APPX BACKEND LOGIC (Core Extraction)
 # ==========================================
-TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6IjEwMTU1NTYyIiwiZW1haWwiOiJhbm9ueW1vdXNAZ21haWwuY29tIiwidGltZXN0YW1wIjoxNzQ1MDc5MzgyLCJ0ZW5hbnRUeXBlIjoidXNlciIsInRlbmFudE5hbWUiOiIiLCJ0ZW5hbnRJZCI6IiIsImRpc3Bvc2FibGUiOmZhbHNlfQ.EfwLhNtbzUVs1qRkMqc3P6ObkKSO0VYWKdAe6GmhdAg"
-USERID = "10155562"
+TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6IjExOTcwMSIsInRpbWVzdGFtcCI6MTc4NjE1Nzk5NywiaXZfdmVyIjoxOCwic2Vzc2lvbiI6ImV5SjBlWEFpT2lKS1YxUWlMQ0poYkdjaU9pSklVekkxTmlKOS5leUpwWkNJNklqRXhPVGN3TVNJc0ltVnRZV2xzSWpvaWMyaHBkbWxuZFhKcVlYSTNNekJBWjIxaGFXd3VZMjl0SWl3aWJtRnRaU0k2SWxaSlMwRlRTQ0JIVlZKS1FWSWlMQ0owWlc1aGJuUlVlWEJsSWpvaWRYTmxjaUlzSW5SbGJtRnVkRTVoYldVaU9pSndaWEptWldOMGFXOXVZV05oWkdWdGVWOWpjbDlrWWlJc0luUmxibUZ1ZEVsa0lqb2lJaXdpWkdsemNHOXpZV0pzWlNJNlptRnNjMlY5Lk00NEtndjdFZXZZVEE5NEtZRFM4M1hZVzlmemxxbU1TNW9wVk91R2NqTncifQ.8mjnkUNKeNPirQL70kAZGJPiPgMiSulVsgStN-kyhWo"
+USERID = "517077"
 
 def get_headers():
     return {
