@@ -1,1 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Appx Course Extractor</title>
+    <style>
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background-color: #f0f2f5; 
+            margin: 0; 
+            padding: 20px; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            min-height: 100vh; 
+        }
+        .card { 
+            background: white; 
+            padding: 30px; 
+            border-radius: 12px; 
+            box-shadow: 0 8px 24px rgba(0,0,0,0.1); 
+            width: 100%; 
+            max-width: 400px; 
+        }
+        h2 { 
+            text-align: center; 
+            color: #1a73e8; 
+            margin-top: 0; 
+        }
+        label { 
+            font-weight: bold; 
+            font-size: 14px; 
+            color: #555; 
+            display: block; 
+            margin-top: 15px; 
+        }
+        input, select { 
+            width: 100%; 
+            padding: 12px; 
+            margin-top: 8px; 
+            border: 1px solid #ccc; 
+            border-radius: 6px; 
+            box-sizing: border-box; 
+            font-size: 14px; 
+        }
+        button { 
+            width: 100%; 
+            padding: 14px; 
+            margin-top: 20px; 
+            background-color: #1a73e8; 
+            color: white; 
+            border: none; 
+            border-radius: 6px; 
+            font-size: 16px; 
+            font-weight: bold; 
+            cursor: pointer; 
+            transition: background 0.3s; 
+        }
+        button:hover { background-color: #1557b0; }
+        button:disabled { background-color: #9aa0a6; cursor: not-allowed; }
+        .hidden { display: none; }
+        .status { 
+            text-align: center; 
+            margin-top: 15px; 
+            font-size: 14px; 
+            color: #d93025; 
+            font-weight: bold; 
+        }
+        .success { color: #188038; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>Appx Extractor</h2>
+        
+        <div id="step1">
+            <label for="apiUrl">Appx API URL:</label>
+            <input type="text" id="apiUrl" placeholder="https://api.example.com">
+            <button id="fetchBtn" onclick="fetchCourses()">Get Courses</button>
+            <div id="status1" class="status"></div>
+        </div>
 
+        <div id="step2" class="hidden">
+            <label for="courseSelect">Select Course:</label>
+            <select id="courseSelect"></select>
+            <button id="extractBtn" onclick="extractCourse()">Extract & Download</button>
+            <div id="status2" class="status"></div>
+        </div>
+    </div>
+
+    <script>
+        let courseList = [];
+
+        async function fetchCourses() {
+            let apiUrl = document.getElementById('apiUrl').value.trim();
+            const statusBtn = document.getElementById('fetchBtn');
+            const statusText = document.getElementById('status1');
+            
+            if (!apiUrl) {
+                statusText.innerText = "Please enter an API URL.";
+                return;
+            }
+
+            if (!apiUrl.startsWith("http")) {
+                apiUrl = "https://" + apiUrl;
+            }
+
+            statusBtn.disabled = true;
+            statusText.innerText = "Fetching courses...";
+            statusText.className = "status";
+
+            try {
+                const response = await fetch('/api/get_courses', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ api_url: apiUrl })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    courseList = data.courses;
+                    const select = document.getElementById('courseSelect');
+                    select.innerHTML = '';
+                    
+                    courseList.forEach((course, index) => {
+                        const option = document.createElement('option');
+                        option.value = index;
+                        option.innerText = `${course.course_name} (₹${course.price})`;
+                        select.appendChild(option);
+                    });
+                    
+                    document.getElementById('step1').classList.add('hidden');
+                    document.getElementById('step2').classList.remove('hidden');
+                    statusText.innerText = "";
+                } else {
+                    statusText.innerText = "Error: " + data.error;
+                }
+            } catch (error) {
+                statusText.innerText = "Connection failed. Make sure backend is running.";
+            }
+            
+            statusBtn.disabled = false;
+        }
+
+        async function extractCourse() {
+            let apiUrl = document.getElementById('apiUrl').value.trim();
+            if (!apiUrl.startsWith("http")) apiUrl = "https://" + apiUrl;
+            
+            const selectedIndex = document.getElementById('courseSelect').value;
+            const course = courseList[selectedIndex];
+            const statusBtn = document.getElementById('extractBtn');
+            const statusText = document.getElementById('status2');
+
+            statusBtn.disabled = true;
+            statusText.innerText = "Extracting... Please wait.";
+            statusText.className = "status";
+
+            try {
+                const response = await fetch('/api/extract', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        api_url: apiUrl,
+                        course_id: course.id,
+                        folder_wise_course: course.folder_wise_course
+                    })
+                });
+
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const link = document.createElement('a');
+                    link.href = window.URL.createObjectURL(blob);
+                    link.download = `${course.course_name.replace(/[^a-zA-Z0-9]/g, '_')}.txt`;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    
+                    statusText.innerText = "Downloaded successfully!";
+                    statusText.className = "status success";
+                } else {
+                    const data = await response.json();
+                    statusText.innerText = "Error: " + (data.error || "Extraction failed");
+                    statusText.className = "status";
+                }
+            } catch (error) {
+                statusText.innerText = "Download failed. Check connection.";
+                statusText.className = "status";
+            }
+
+            statusBtn.disabled = false;
+        }
+    </script>
+</body>
+</html>
