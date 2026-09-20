@@ -29,17 +29,26 @@ HTML_TEMPLATE = """
         input, select { width: 95%; padding: 10px; margin-top: 10px; border: 1px solid #ccc; border-radius: 5px; font-size: 14px;}
         .loader { display: none; text-align: center; margin-top: 15px; font-weight: bold; color: #007bff; }
         #step2 { display: none; margin-top: 20px; border-top: 1px solid #eee; padding-top: 20px;}
+        .creds-box { background: #f9f9f9; padding: 15px; border-radius: 8px; margin-top: 10px; border: 1px solid #ddd; }
     </style>
 </head>
 <body>
     <div class="container">
         <h2>📚 Appx Extractor App</h2>
         
-        <label>Enter Appx API URL (https://...):</label>
+        <label>Appx API URL (https://...):</label>
         <input type="text" id="apiUrl" placeholder="https://api.example.com">
         
-        <button class="btn" id="fetchBtn" onclick="fetchCourses()">Get Courses</button>
-        <div class="loader" id="loader1">Fetching courses, please wait...</div>
+        <div class="creds-box">
+            <label>Mobile Number:</label>
+            <input type="text" id="phone" placeholder="Enter Mobile Number">
+            
+            <label>Password:</label>
+            <input type="password" id="password" placeholder="Enter Password">
+        </div>
+        
+        <button class="btn" id="fetchBtn" onclick="fetchCourses()">Login & Get Courses</button>
+        <div class="loader" id="loader1">Logging in and fetching courses...</div>
 
         <div id="step2">
             <label>Select Course:</label>
@@ -52,10 +61,17 @@ HTML_TEMPLATE = """
 
     <script>
         let coursesData = [];
+        let userToken = "";
+        let userId = "";
 
         async function fetchCourses() {
             let apiUrl = document.getElementById("apiUrl").value.trim();
+            let phone = document.getElementById("phone").value.trim();
+            let password = document.getElementById("password").value.trim();
+
             if(!apiUrl) { alert("Please enter the API URL"); return; }
+            if(!phone || !password) { alert("Please enter both Mobile Number and Password"); return; }
+            
             if(!apiUrl.startsWith("http")) { apiUrl = "https://" + apiUrl; }
 
             document.getElementById("loader1").style.display = "block";
@@ -63,16 +79,19 @@ HTML_TEMPLATE = """
             document.getElementById("step2").style.display = "none";
 
             try {
-                let response = await fetch('/api/get_courses', {
+                let response = await fetch('/api/login_and_get_courses', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ api_url: apiUrl })
+                    body: JSON.stringify({ api_url: apiUrl, phone: phone, password: password })
                 });
                 
                 let data = await response.json();
                 
                 if(data.success) {
                     coursesData = data.courses;
+                    userToken = data.token;
+                    userId = data.userid;
+                    
                     let select = document.getElementById("courseSelect");
                     select.innerHTML = "";
                     coursesData.forEach((c, index) => {
@@ -82,6 +101,7 @@ HTML_TEMPLATE = """
                         select.appendChild(opt);
                     });
                     document.getElementById("step2").style.display = "block";
+                    alert("Login Successful!");
                 } else {
                     alert("Error: " + data.error);
                 }
@@ -110,7 +130,8 @@ HTML_TEMPLATE = """
                         api_url: apiUrl,
                         course_id: course.id,
                         folder_wise_course: course.folder_wise_course,
-                        course_name: course.course_name
+                        token: userToken,
+                        userid: userId
                     })
                 });
 
@@ -140,16 +161,14 @@ HTML_TEMPLATE = """
 # ==========================================
 # 2. APPX BACKEND LOGIC (Core Extraction)
 # ==========================================
-TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6IjY1MjkzOTgiLCJ0aW1lc3RhbXAiOjE3ODM2NTg4MzQsIml2X3ZlciI6NjQsInNlc3Npb24iOiJleUowZVhBaU9pSktWMVFpTENKaGJHY2lPaUpJVXpJMU5pSjkuZXlKcFpDSTZJalkxTWprek9UZ2lMQ0psYldGcGJDSTZJbk4xY21WdVpISmhiRzlrYUdrME1UTkFaMjFoYVd3dVkyOXRJaXdpYm1GdFpTSTZJbE4xY21WdVpISmhJRXh2WkdocElpd2lkR1Z1WVc1MFZIbHdaU0k2SW5WelpYSWlMQ0owWlc1aGJuUk9ZVzFsSWpvaWNtOTZaMkZ5WDJSaUlpd2lkR1Z1WVc1MFNXUWlPaUlpTENKa2FYTndiM05oWW14bElqcG1ZV3h6WlgwLjZaYkV6LVVrVWlEOG1EVkNhZ1ZONXU2U3ZiX1dEcXgxcl9VdjlYcTJiREUifQ.XddzP9eIIAj-HT5xCHvcmR8bM-eyrzCZ2z-HdIkJwPk"
-USERID = "6405136"
 
-def get_headers():
+def get_headers(token, userid):
     return {
         "Client-Service": "Appx",
         "Auth-Key": "appxapi",
         "source": "website",
-        "Authorization": TOKEN,
-        "User-ID": USERID,
+        "Authorization": token,
+        "User-ID": str(userid),
         'User-Agent': "okhttp/4.9.1",
         'Accept-Encoding': "gzip"
     }
@@ -168,10 +187,14 @@ def appx_decrypt(enc):
     except:
         return ""
 
-async def fetch_appx_html_to_json(session, url, headers=None):
+async def fetch_appx_html_to_json(session, url, headers=None, data=None):
     try:
-        async with session.get(url, headers=headers) as response:
-            text = await response.text()
+        if data:
+            async with session.post(url, headers=headers, data=data) as response:
+                text = await response.text()
+        else:
+            async with session.get(url, headers=headers) as response:
+                text = await response.text()
         try:
             return json.loads(text)
         except json.JSONDecodeError:
@@ -270,30 +293,53 @@ async def process_folder_wise_course_1(session, api, selected_batch_id, headers)
 def home():
     return render_template_string(HTML_TEMPLATE)
 
-@app.route('/api/get_courses', methods=['POST'])
-def get_courses():
-    api_url = request.json.get('api_url', '').rstrip('/')
-    if not api_url: return jsonify({"success": False, "error": "API URL missing"})
+@app.route('/api/login_and_get_courses', methods=['POST'])
+def login_and_get_courses():
+    data = request.json
+    api_url = data.get('api_url', '').rstrip('/')
+    phone = data.get('phone')
+    password = data.get('password')
     
-    headers = get_headers()
+    if not api_url or not phone or not password: 
+        return jsonify({"success": False, "error": "Missing API URL, Phone, or Password"})
     
-    async def fetch_all():
+    async def perform_login_and_fetch():
         async with aiohttp.ClientSession() as session:
+            # 1. Hit Login API
+            login_url = f"{api_url}/get/login"
+            login_payload = {"email": phone, "password": password}
+            
+            login_res = await fetch_appx_html_to_json(session, login_url, data=login_payload)
+            
+            if not login_res or login_res.get("status") != 200:
+                error_msg = login_res.get("message", "Invalid Number or Password") if login_res else "Login Request Failed"
+                return {"success": False, "error": error_msg}
+                
+            # 2. Extract Token and UserID from login response
+            token = login_res.get("data", {}).get("token", "")
+            userid = login_res.get("data", {}).get("userid", "") or login_res.get("data", {}).get("id", "")
+            
+            if not token or not userid:
+                return {"success": False, "error": "Could not extract Token from login response"}
+                
+            # 3. Fetch Courses with the new dynamic Token
+            headers = get_headers(token, userid)
             res1 = await fetch_appx_html_to_json(session, f"{api_url}/get/courselist", headers)
             res2 = await fetch_appx_html_to_json(session, f"{api_url}/get/courselistnewv2", headers)
             
             c1 = res1.get("data", []) if res1 and res1.get('status') == 200 else []
             c2 = res2.get("data", []) if res2 and res2.get('status') == 200 else []
-            return c1 + c2
+            courses = c1 + c2
+            
+            if not courses:
+                return {"success": False, "error": "Login successful, but no courses found for this account"}
+                
+            return {"success": True, "courses": courses, "token": token, "userid": userid}
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    courses = loop.run_until_complete(fetch_all())
-    
-    if not courses:
-        return jsonify({"success": False, "error": "No courses found for this API"})
-        
-    return jsonify({"success": True, "courses": courses})
+    result = loop.run_until_complete(perform_login_and_fetch())
+    return jsonify(result)
 
 @app.route('/api/extract', methods=['POST'])
 def extract_course():
@@ -302,7 +348,14 @@ def extract_course():
     course_id = data.get('course_id')
     folder_wise = data.get('folder_wise_course', 0)
     
-    headers = get_headers()
+    # Get dynamic token and userid from frontend
+    token = data.get('token')
+    userid = data.get('userid')
+    
+    if not token or not userid:
+        return jsonify({"success": False, "error": "Unauthorized: Token missing. Please login again."}), 401
+        
+    headers = get_headers(token, userid)
 
     async def run_extraction():
         async with aiohttp.ClientSession() as session:
@@ -332,4 +385,3 @@ if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
-    
