@@ -437,10 +437,6 @@ def background_task(task_id, data):
 def home():
     return render_template_string(HTML_TEMPLATE)
 
-@app.route('/')
-def home():
-    return render_template_string(HTML_TEMPLATE)
-
 @app.route('/api/login_and_get_courses', methods=['POST'])
 def login_and_get_courses():
     data = request.json
