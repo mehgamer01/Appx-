@@ -3,11 +3,16 @@ import asyncio
 import aiohttp
 import json
 import re
+import uuid
+import threading
 from base64 import b64decode
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 
 app = Flask(__name__)
+
+# Global Dictionary to store extraction progress
+JOBS = {}
 
 # ==========================================
 # 1. HTML FRONTEND (Mobile-Friendly Web App)
@@ -30,6 +35,13 @@ HTML_TEMPLATE = """
         .loader { display: none; text-align: center; margin-top: 15px; font-weight: bold; color: #007bff; }
         #step2 { display: none; margin-top: 20px; border-top: 1px solid #eee; padding-top: 20px;}
         .creds-box { background: #f9f9f9; padding: 15px; border-radius: 8px; margin-top: 10px; border: 1px solid #ddd; }
+        
+        /* Progress Bar CSS */
+        #progressContainer { display: none; margin-top: 20px; background: #fff; border: 1px solid #ddd; padding: 15px; border-radius: 8px;}
+        .progress-bar { width: 100%; background: #e9ecef; border-radius: 8px; overflow: hidden; height: 22px; border: 1px solid #ccc; margin-top: 5px;}
+        .progress-fill { width: 0%; background: #28a745; height: 100%; transition: width 0.4s ease; }
+        .progress-status { text-align: center; font-size: 14px; font-weight: bold; color: #444; margin-bottom: 5px;}
+        .progress-text { text-align: center; font-size: 12px; font-weight: bold; color: #666; margin-top: 5px;}
     </style>
 </head>
 <body>
@@ -55,7 +67,16 @@ HTML_TEMPLATE = """
             <select id="courseSelect"></select>
             
             <button class="btn" id="extractBtn" onclick="extractCourse()">Extract & Download</button>
-            <div class="loader" id="loader2">Extracting data... This may take a few minutes.</div>
+            
+            <!-- Progress Bar Section -->
+            <div id="progressContainer">
+                <div id="progressStatus" class="progress-status">Starting Extraction...</div>
+                <div class="progress-bar">
+                    <div id="progressFill" class="progress-fill"></div>
+                </div>
+                <div id="progressText" class="progress-text">0% (0 / 0 Videos)</div>
+            </div>
+            
         </div>
     </div>
 
@@ -63,6 +84,7 @@ HTML_TEMPLATE = """
         let coursesData = [];
         let userToken = "";
         let userId = "";
+        let pollingInterval = null;
 
         async function fetchCourses() {
             let apiUrl = document.getElementById("apiUrl").value.trim();
@@ -71,12 +93,12 @@ HTML_TEMPLATE = """
 
             if(!apiUrl) { alert("Please enter the API URL"); return; }
             if(!phone || !password) { alert("Please enter both Mobile Number and Password"); return; }
-            
             if(!apiUrl.startsWith("http")) { apiUrl = "https://" + apiUrl; }
 
             document.getElementById("loader1").style.display = "block";
             document.getElementById("fetchBtn").disabled = true;
             document.getElementById("step2").style.display = "none";
+            document.getElementById("progressContainer").style.display = "none";
 
             try {
                 let response = await fetch('/api/login_and_get_courses', {
@@ -119,11 +141,16 @@ HTML_TEMPLATE = """
             let selectedIndex = document.getElementById("courseSelect").value;
             let course = coursesData[selectedIndex];
 
-            document.getElementById("loader2").style.display = "block";
             document.getElementById("extractBtn").disabled = true;
+            
+            // Show Progress UI
+            document.getElementById("progressContainer").style.display = "block";
+            document.getElementById("progressStatus").innerText = "Connecting to Server...";
+            document.getElementById("progressFill").style.width = "0%";
+            document.getElementById("progressText").innerText = "0% (0 / 0 Videos)";
 
             try {
-                let response = await fetch('/api/extract', {
+                let response = await fetch('/api/start_extract', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
@@ -135,23 +162,56 @@ HTML_TEMPLATE = """
                     })
                 });
 
-                if (response.ok) {
-                    let blob = await response.blob();
-                    let link = document.createElement('a');
-                    link.href = window.URL.createObjectURL(blob);
-                    let cleanName = course.course_name.replace(/[^a-zA-Z0-9]/g, "_");
-                    link.download = `${cleanName}.txt`;
-                    link.click();
+                let data = await response.json();
+                
+                if (data.task_id) {
+                    pollingInterval = setInterval(() => checkProgress(data.task_id, course.course_name), 1500);
                 } else {
-                    let errData = await response.json();
-                    alert("Error: " + errData.error);
+                    alert("Error: " + data.error);
+                    document.getElementById("extractBtn").disabled = false;
                 }
             } catch (err) {
-                alert("Extraction failed.");
+                alert("Failed to start extraction.");
+                document.getElementById("extractBtn").disabled = false;
             }
+        }
 
-            document.getElementById("loader2").style.display = "none";
-            document.getElementById("extractBtn").disabled = false;
+        async function checkProgress(taskId, courseName) {
+            try {
+                let res = await fetch('/api/progress/' + taskId);
+                let data = await res.json();
+                
+                if (data.error) {
+                    clearInterval(pollingInterval);
+                    alert("Task Error: " + data.error);
+                    document.getElementById("extractBtn").disabled = false;
+                    return;
+                }
+
+                if (data.status === 'fetching_structure') {
+                    document.getElementById("progressStatus").innerText = "Scanning Folders & PDFs (Please wait)...";
+                } else if (data.status === 'extracting_videos') {
+                    document.getElementById("progressStatus").innerText = "Extracting Video DRM Links...";
+                }
+
+                document.getElementById("progressFill").style.width = data.progress + "%";
+                document.getElementById("progressText").innerText = `${data.progress}% (${data.completed} / ${data.total} Videos)`;
+
+                if (data.status === 'completed') {
+                    clearInterval(pollingInterval);
+                    document.getElementById("progressStatus").innerText = "Extraction Complete! Downloading...";
+                    document.getElementById("extractBtn").disabled = false;
+                    
+                    window.location.href = `/api/download/${taskId}?name=${encodeURIComponent(courseName)}`;
+                } else if (data.status === 'error') {
+                    clearInterval(pollingInterval);
+                    document.getElementById("progressStatus").innerText = "Extraction Failed!";
+                    alert("Error: " + data.error);
+                    document.getElementById("extractBtn").disabled = false;
+                }
+            } catch(e) {
+                console.log("Polling error... retrying...");
+            }
         }
     </script>
 </body>
@@ -159,7 +219,7 @@ HTML_TEMPLATE = """
 """
 
 # ==========================================
-# 2. APPX BACKEND LOGIC (Core Extraction)
+# 2. APPX BACKEND LOGIC & DECRYPTION
 # ==========================================
 
 def get_headers(token, userid):
@@ -167,10 +227,12 @@ def get_headers(token, userid):
         "Client-Service": "Appx",
         "Auth-Key": "appxapi",
         "source": "website",
+        "Device-Type": "web",
+        "io-Safari": "0",
         "Authorization": token,
         "User-ID": str(userid),
-        'User-Agent': "okhttp/4.9.1",
-        'Accept-Encoding': "gzip"
+        'User-Agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+        'Accept-Encoding': "gzip, deflate, br"
     }
 
 def appx_decrypt(enc):
@@ -211,9 +273,75 @@ async def fetch_appx_html_to_json(session, url, headers=None, data=None):
     except Exception as e:
         return None
 
+# ==========================================
+# 3. FAST STRUCTURE FETCHING (PHASE 1)
+# ==========================================
+
+async def collect_folder_0(session, api, course_id, headers):
+    video_items = []
+    other_outputs = []
+    res = await fetch_appx_html_to_json(session, f"{api}/get/allsubjectfrmlivecourseclass?courseid={course_id}&start=-1", headers)
+    if res and "data" in res:
+        for subject in res["data"]:
+            sub_id = subject.get("subjectid")
+            res2 = await fetch_appx_html_to_json(session, f"{api}/get/alltopicfrmlivecourseclass?courseid={course_id}&subjectid={sub_id}&start=-1", headers)
+            if res2 and "data" in res2:
+                for topic in res2["data"]:
+                    top_id = topic.get("topicid")
+                    url_v3 = f"{api}/get/livecourseclassbycoursesubtopconceptapiv3?courseid={course_id}&subjectid={sub_id}&topicid={top_id}&conceptid=&windowapp=false&start=-1"
+                    res3 = await fetch_appx_html_to_json(session, url_v3, headers)
+                    
+                    if res3 and "data" in res3:
+                        for item in res3["data"]:
+                            m_type = item.get("material_type")
+                            if m_type == "VIDEO":
+                                item['folder_wise'] = 0
+                                video_items.append(item)
+                            elif m_type in ("PDF", "TEST"):
+                                title = item.get("Title", "Untitled")
+                                pdf_link = appx_decrypt(item.get("pdf_link", ""))
+                                if pdf_link:
+                                    if str(item.get("is_pdf_encrypted", 0)) == "1":
+                                        key = appx_decrypt(item.get("pdf_encryption_key", ""))
+                                        other_outputs.append(f"{title}:{pdf_link}*{key}\n" if key else f"{title}:{pdf_link}\n")
+                                    else:
+                                        other_outputs.append(f"{title}:{pdf_link}\n")
+    return video_items, other_outputs
+
+async def collect_folder_1(session, api, course_id, parent_id, headers):
+    video_items = []
+    other_outputs = []
+    res = await fetch_appx_html_to_json(session, f"{api}/get/folder_contentsv2?course_id={course_id}&parent_id={parent_id}", headers)
+    if res and "data" in res:
+        for item in res["data"]:
+            m_type = item.get("material_type")
+            if m_type == "VIDEO":
+                item['folder_wise'] = 1
+                video_items.append(item)
+            elif m_type == "FOLDER":
+                sub_vids, sub_outs = await collect_folder_1(session, api, course_id, item.get("id"), headers)
+                video_items.extend(sub_vids)
+                other_outputs.extend(sub_outs)
+            elif m_type in ("PDF", "TEST"):
+                title = item.get("Title", "Untitled")
+                pdf_link = appx_decrypt(item.get("pdf_link", ""))
+                if pdf_link:
+                    if str(item.get("is_pdf_encrypted", 0)) == "1":
+                        key = appx_decrypt(item.get("pdf_encryption_key", ""))
+                        other_outputs.append(f"{title}:{pdf_link}*{key}\n" if key else f"{title}:{pdf_link}\n")
+                    else:
+                        other_outputs.append(f"{title}:{pdf_link}\n")
+    return video_items, other_outputs
+
+# ==========================================
+# 4. SLOW DRM EXTRACTION (PHASE 2)
+# ==========================================
+
 async def fetch_appx_video_id_details_v2(session, api, selected_batch_id, video_id, ytFlag, headers, folder_wise_course):
     try:
-        res = await fetch_appx_html_to_json(session, f"{api}/get/fetchVideoDetailsById?course_id={selected_batch_id}&folder_wise_course={folder_wise_course}&ytflag={ytFlag}&video_id={video_id}", headers)
+        fetch_url = f"{api}/get/fetchVideoDetailsById?course_id={selected_batch_id}&folder_wise_course={folder_wise_course}&ytflag={ytFlag}&video_id={video_id}&c_app_api_url="
+        res = await fetch_appx_html_to_json(session, fetch_url, headers)
+        
         output = []
         if res and res.get('data'):
             data = res['data']
@@ -225,7 +353,7 @@ async def fetch_appx_video_id_details_v2(session, api, selected_batch_id, video_
                 if path: output.append(f"{Title}:{path}\n")
                     
             pdf_link = appx_decrypt(data.get("pdf_link", ""))
-            if pdf_link and pdf_link.endswith(".pdf"):
+            if pdf_link:
                 if str(data.get("is_pdf_encrypted", 0)) == "1":
                     key = appx_decrypt(data.get("pdf_encryption_key", ""))
                     output.append(f"{Title}:{pdf_link}*{key}\n" if key else f"{Title}:{pdf_link}\n")
@@ -235,60 +363,80 @@ async def fetch_appx_video_id_details_v2(session, api, selected_batch_id, video_
     except:
         return []
 
-async def fetch_appx_folder_contents_v2(session, api, selected_batch_id, folder_id, headers, folder_wise_course):
-    try:
-        res = await fetch_appx_html_to_json(session, f"{api}/get/folder_contentsv2?course_id={selected_batch_id}&parent_id={folder_id}", headers)
-        tasks, output = [], []
-        if res and "data" in res:
-            for item in res["data"]:
-                if item.get("material_type") == "VIDEO":
-                    tasks.append(fetch_appx_video_id_details_v2(session, api, selected_batch_id, item.get("id"), item.get("ytFlag"), headers, folder_wise_course))
-                elif item.get("material_type") == "FOLDER":
-                    tasks.append(fetch_appx_folder_contents_v2(session, api, selected_batch_id, item.get("id"), headers, folder_wise_course))
-        
-        if tasks:
-            results = await asyncio.gather(*tasks)
-            for r in results: output.extend(r)
-        return output
-    except:
-        return []
+# ==========================================
+# 5. BACKGROUND EXTRACTION THREAD LOGIC
+# ==========================================
 
-async def process_folder_wise_course_0(session, api, selected_batch_id, headers):
-    res = await fetch_appx_html_to_json(session, f"{api}/get/allsubjectfrmlivecourseclass?courseid={selected_batch_id}&start=-1", headers)
-    all_outputs, tasks = [], []
-    if res and "data" in res:
-        for subject in res["data"]:
-            res2 = await fetch_appx_html_to_json(session, f"{api}/get/alltopicfrmlivecourseclass?courseid={selected_batch_id}&subjectid={subject.get('subjectid')}&start=-1", headers)
-            if res2 and "data" in res2:
-                for topic in res2["data"]:
-                    res3 = await fetch_appx_html_to_json(session, f"{api}/get/livecourseclassbycoursesubtopconceptapiv3?topicid={topic.get('topicid')}&start=-1&courseid={selected_batch_id}&subjectid={subject.get('subjectid')}", headers)
-                    if res3 and "data" in res3:
-                        for item in res3["data"]:
-                            if item.get("material_type") == "VIDEO":
-                                tasks.append(fetch_appx_video_id_details_v2(session, api, selected_batch_id, item.get("id"), item.get("ytFlag"), headers, 0))
-    if tasks:
-        results = await asyncio.gather(*tasks)
-        for r in results: all_outputs.extend(r)
-    return all_outputs
-
-async def process_folder_wise_course_1(session, api, selected_batch_id, headers):
-    res = await fetch_appx_html_to_json(session, f"{api}/get/folder_contentsv2?course_id={selected_batch_id}&parent_id=-1", headers)
-    all_outputs, tasks = [], []
-    if res and "data" in res:
-        for item in res["data"]:
-            if item.get("material_type") == "VIDEO":
-                tasks.append(fetch_appx_video_id_details_v2(session, api, selected_batch_id, item.get("id"), item.get("ytFlag"), headers, 1))
-            elif item.get("material_type") == "FOLDER":
-                tasks.append(fetch_appx_folder_contents_v2(session, api, selected_batch_id, item.get("id"), headers, 1))
+async def run_extraction_logic(task_id, data):
+    api_url = data.get('api_url', '').rstrip('/')
+    course_id = data.get('course_id')
+    folder_wise = data.get('folder_wise_course', 0)
+    token = data.get('token')
+    userid = data.get('userid')
     
-    if tasks:
-        results = await asyncio.gather(*tasks)
-        for r in results: all_outputs.extend(r)
-    return all_outputs
+    headers = get_headers(token, userid)
+
+    async with aiohttp.ClientSession() as session:
+        JOBS[task_id]['status'] = 'fetching_structure'
+        video_items = []
+        final_outputs = []
+        
+        if folder_wise == 0:
+            vids, outs = await collect_folder_0(session, api_url, course_id, headers)
+            video_items.extend(vids)
+            final_outputs.extend(outs)
+        elif folder_wise == 1:
+            vids, outs = await collect_folder_1(session, api_url, course_id, "-1", headers)
+            video_items.extend(vids)
+            final_outputs.extend(outs)
+        else:
+            vids0, outs0 = await collect_folder_0(session, api_url, course_id, headers)
+            vids1, outs1 = await collect_folder_1(session, api_url, course_id, "-1", headers)
+            video_items.extend(vids0 + vids1)
+            final_outputs.extend(outs0 + outs1)
+
+        JOBS[task_id]['total'] = len(video_items)
+        JOBS[task_id]['status'] = 'extracting_videos'
+        
+        if len(video_items) > 0:
+            tasks = [fetch_appx_video_id_details_v2(session, api_url, course_id, v['id'], v.get('ytFlag', 0), headers, v.get('folder_wise', folder_wise)) for v in video_items]
+            
+            for coro in asyncio.as_completed(tasks):
+                res = await coro
+                if res:
+                    final_outputs.extend(res)
+                
+                JOBS[task_id]['completed'] += 1
+                JOBS[task_id]['progress'] = int((JOBS[task_id]['completed'] / JOBS[task_id]['total']) * 100)
+        else:
+            JOBS[task_id]['progress'] = 100
+
+        if not final_outputs:
+            JOBS[task_id]['error'] = "No data found in this course."
+            JOBS[task_id]['status'] = 'error'
+        else:
+            JOBS[task_id]['result'] = "".join(final_outputs)
+            JOBS[task_id]['status'] = 'completed'
+
+
+def background_task(task_id, data):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(run_extraction_logic(task_id, data))
+    except Exception as e:
+        JOBS[task_id]['error'] = str(e)
+        JOBS[task_id]['status'] = 'error'
+    finally:
+        loop.close()
 
 # ==========================================
-# 3. FLASK API ROUTES
+# 6. FLASK API ROUTES
 # ==========================================
+@app.route('/')
+def home():
+    return render_template_string(HTML_TEMPLATE)
+
 @app.route('/')
 def home():
     return render_template_string(HTML_TEMPLATE)
@@ -308,7 +456,6 @@ def login_and_get_courses():
             login_url = f"{api_url}/post/userLogin"
             login_payload = f"email={phone}&password={password}"
             
-            # App Method Bypass Headers
             login_headers = {
                 'Auth-Key': 'appxapi',
                 'User-Id': '-2',
@@ -326,7 +473,6 @@ def login_and_get_courses():
                 token = login_res.get("data", {}).get("token", "")
                 userid = login_res.get("data", {}).get("userid", "")
             else:
-                # Website Method Bypass Headers (Fallback)
                 login_headers_web = {
                     'Client-Service': 'Appx',
                     'source': 'website',
@@ -334,7 +480,7 @@ def login_and_get_courses():
                     'Authorization': '',
                     'User-ID': '-2',
                     'Content-Type': 'application/x-www-form-urlencoded',
-                    'User-Agent': 'Mozilla/5.0 (Linux; Android 12) Chrome/124 Mobile Safari/537'
+                    'User-Agent': 'Mozilla/5.0 (Linux; Android 12) Chrome/124.0.0.0 Mobile Safari/537.36'
                 }
                 login_res2 = await fetch_appx_html_to_json(session, login_url, headers=login_headers_web, data=login_payload)
                 if login_res2 and login_res2.get("status") == 200:
@@ -345,17 +491,23 @@ def login_and_get_courses():
                 error_msg = login_res.get("message", "Login Failed") if login_res else "Invalid Credentials or App Update"
                 return {"success": False, "error": error_msg}
                 
-            # Fetch Courses
             headers = get_headers(token, userid)
-            res1 = await fetch_appx_html_to_json(session, f"{api_url}/get/courselist", headers)
-            res2 = await fetch_appx_html_to_json(session, f"{api_url}/get/courselistnewv2", headers)
+            res1 = await fetch_appx_html_to_json(session, f"{api_url}/get/mycoursev2", headers)
+            res2 = await fetch_appx_html_to_json(session, f"{api_url}/get/mycourse", headers)
+            
+            if not res1 and not res2:
+                res1 = await fetch_appx_html_to_json(session, f"{api_url}/get/courselist", headers)
             
             c1 = res1.get("data", []) if res1 and res1.get('status') == 200 else []
             c2 = res2.get("data", []) if res2 and res2.get('status') == 200 else []
+            
+            if isinstance(c1, dict) and "courses" in c1: c1 = c1["courses"]
+            if isinstance(c2, dict) and "courses" in c2: c2 = c2["courses"]
+            
             courses = c1 + c2
             
             if not courses:
-                return {"success": False, "error": "Login successful, but no courses found for this account"}
+                return {"success": False, "error": "Login successful, but no enrolled courses found"}
                 
             return {"success": True, "courses": courses, "token": token, "userid": userid}
 
@@ -364,44 +516,31 @@ def login_and_get_courses():
     result = loop.run_until_complete(perform_login_and_fetch())
     return jsonify(result)
 
-@app.route('/api/extract', methods=['POST'])
-def extract_course():
-    data = request.json
-    api_url = data.get('api_url', '').rstrip('/')
-    course_id = data.get('course_id')
-    folder_wise = data.get('folder_wise_course', 0)
-    
-    token = data.get('token')
-    userid = data.get('userid')
-    
-    if not token or not userid:
-        return jsonify({"success": False, "error": "Unauthorized: Token missing. Please login again."}), 401
-        
-    headers = get_headers(token, userid)
+@app.route('/api/start_extract', methods=['POST'])
+def start_extract():
+    task_id = str(uuid.uuid4())
+    JOBS[task_id] = {'progress': 0, 'total': 0, 'completed': 0, 'status': 'starting', 'result': None, 'error': None}
+    threading.Thread(target=background_task, args=(task_id, request.json)).start()
+    return jsonify({"task_id": task_id})
 
-    async def run_extraction():
-        async with aiohttp.ClientSession() as session:
-            all_data = []
-            if folder_wise == 0:
-                all_data = await process_folder_wise_course_0(session, api_url, course_id, headers)
-            elif folder_wise == 1:
-                all_data = await process_folder_wise_course_1(session, api_url, course_id, headers)
-            else:
-                out0 = await process_folder_wise_course_0(session, api_url, course_id, headers)
-                out1 = await process_folder_wise_course_1(session, api_url, course_id, headers)
-                all_data = out0 + out1
-            return "".join(all_data)
+@app.route('/api/progress/<task_id>', methods=['GET'])
+def get_progress(task_id):
+    if task_id not in JOBS:
+        return jsonify({"error": "Task not found"}), 404
+    return jsonify(JOBS[task_id])
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        final_text = loop.run_until_complete(run_extraction())
-        if not final_text:
-            return jsonify({"success": False, "error": "No data found in course"}), 404
-            
-        return Response(final_text, mimetype="text/plain", headers={"Content-Disposition": f"attachment;filename=course.txt"})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+@app.route('/api/download/<task_id>', methods=['GET'])
+def download_result(task_id):
+    if task_id not in JOBS or JOBS[task_id]['status'] != 'completed':
+        return "File not ready", 400
+    
+    result = JOBS[task_id]['result']
+    course_name = request.args.get('name', 'Course')
+    clean_name = re.sub(r'[^a-zA-Z0-9]', '_', course_name)
+    
+    del JOBS[task_id] 
+    return Response(result, mimetype="text/plain", headers={"Content-Disposition": f"attachment;filename={clean_name}.txt"})
+
 
 if __name__ == "__main__":
     import os
