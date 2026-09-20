@@ -36,11 +36,11 @@ HTML_TEMPLATE = """
     <div class="container">
         <h2>📚 Appx Extractor App</h2>
         
-        <label>Appx API URL (https://...):</label>
+        <label>Appx API URL (e.g., https://rozgarapinew.teachx.in):</label>
         <input type="text" id="apiUrl" placeholder="https://api.example.com">
         
         <div class="creds-box">
-            <label>Mobile Number:</label>
+            <label>Mobile Number / Email:</label>
             <input type="text" id="phone" placeholder="Enter Mobile Number">
             
             <label>Password:</label>
@@ -217,7 +217,7 @@ async def fetch_appx_video_id_details_v2(session, api, selected_batch_id, video_
         output = []
         if res and res.get('data'):
             data = res['data']
-            Title = data["Title"]
+            Title = data.get("Title", "Untitled")
             
             drm_res = await fetch_appx_html_to_json(session, f"{api}/get/get_mpd_drm_links?videoid={video_id}&folder_wise_course={folder_wise_course}", headers)
             if drm_res and drm_res.get('data') and len(drm_res['data']) > 0:
@@ -305,24 +305,47 @@ def login_and_get_courses():
     
     async def perform_login_and_fetch():
         async with aiohttp.ClientSession() as session:
-            # 1. Hit Login API
-            login_url = f"{api_url}/get/login"
-            login_payload = {"email": phone, "password": password}
+            login_url = f"{api_url}/post/userLogin"
+            login_payload = f"email={phone}&password={password}"
             
-            login_res = await fetch_appx_html_to_json(session, login_url, data=login_payload)
+            # App Method Bypass Headers
+            login_headers = {
+                'Auth-Key': 'appxapi',
+                'User-Id': '-2',
+                'Authorization': '',
+                'Language': 'en',
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Accept-Encoding': 'gzip, deflate',
+                'User-Agent': 'okhttp/4.9.1'
+            }
             
-            if not login_res or login_res.get("status") != 200:
-                error_msg = login_res.get("message", "Invalid Number or Password") if login_res else "Login Request Failed"
+            login_res = await fetch_appx_html_to_json(session, login_url, headers=login_headers, data=login_payload)
+            token, userid = None, None
+
+            if login_res and login_res.get("status") == 200:
+                token = login_res.get("data", {}).get("token", "")
+                userid = login_res.get("data", {}).get("userid", "")
+            else:
+                # Website Method Bypass Headers (Fallback)
+                login_headers_web = {
+                    'Client-Service': 'Appx',
+                    'source': 'website',
+                    'Auth-Key': 'appxapi',
+                    'Authorization': '',
+                    'User-ID': '-2',
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'User-Agent': 'Mozilla/5.0 (Linux; Android 12) Chrome/124 Mobile Safari/537'
+                }
+                login_res2 = await fetch_appx_html_to_json(session, login_url, headers=login_headers_web, data=login_payload)
+                if login_res2 and login_res2.get("status") == 200:
+                    token = login_res2.get("data", {}).get("token", "")
+                    userid = login_res2.get("data", {}).get("userid", "")
+
+            if not token or not userid:
+                error_msg = login_res.get("message", "Login Failed") if login_res else "Invalid Credentials or App Update"
                 return {"success": False, "error": error_msg}
                 
-            # 2. Extract Token and UserID from login response
-            token = login_res.get("data", {}).get("token", "")
-            userid = login_res.get("data", {}).get("userid", "") or login_res.get("data", {}).get("id", "")
-            
-            if not token or not userid:
-                return {"success": False, "error": "Could not extract Token from login response"}
-                
-            # 3. Fetch Courses with the new dynamic Token
+            # Fetch Courses
             headers = get_headers(token, userid)
             res1 = await fetch_appx_html_to_json(session, f"{api_url}/get/courselist", headers)
             res2 = await fetch_appx_html_to_json(session, f"{api_url}/get/courselistnewv2", headers)
@@ -348,7 +371,6 @@ def extract_course():
     course_id = data.get('course_id')
     folder_wise = data.get('folder_wise_course', 0)
     
-    # Get dynamic token and userid from frontend
     token = data.get('token')
     userid = data.get('userid')
     
